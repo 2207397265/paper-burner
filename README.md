@@ -1,7 +1,7 @@
 # Paper Burner - PDF文档OCR与翻译工具
 
 <div align="center">
-  <img src="https://img.shields.io/badge/版本-1.0.0-blue.svg" alt="版本">
+  <img src="https://img.shields.io/badge/版本-1.0.2-blue.svg" alt="版本">
   <img src="https://img.shields.io/badge/License-GPL_v2-blue.svg" alt="许可证">
   <img src="https://img.shields.io/badge/Pure-JavaScript-yellow.svg" alt="JavaScript">
 </div>
