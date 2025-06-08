@@ -1,8 +1,8 @@
 // 全局变量
-let pdfFile = null;
-let markdownContent = '';
-let translationContent = '';
-let imagesData = [];
+let pdfFiles = []; // 改为数组存储多个文件
+let markdownContents = {}; // 使用对象存储每个文件的markdown内容
+let translationContents = {}; // 使用对象存储每个文件的翻译内容
+let imagesDataMap = {}; // 使用对象存储每个文件的图片数据
 
 // DOM 元素
 const mistralApiKeyInput = document.getElementById('mistralApiKey');
@@ -131,10 +131,8 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         dropZone.classList.remove('border-blue-500', 'bg-blue-50');
         
-        if (e.dataTransfer.files.length > 0 && e.dataTransfer.files[0].type === 'application/pdf') {
-            handleFileSelection(e.dataTransfer.files[0]);
-        } else {
-            showNotification('请上传PDF文件', 'error');
+        if (e.dataTransfer.files.length > 0) {
+            handleFileSelection(e.dataTransfer.files);
         }
     });
 
@@ -146,13 +144,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // 文件选择处理
     pdfFileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
-            handleFileSelection(e.target.files[0]);
+            handleFileSelection(e.target.files);
         }
     });
 
     // 移除文件
     removeFileBtn.addEventListener('click', () => {
-        pdfFile = null;
+        pdfFiles = [];
         fileInfo.classList.add('hidden');
         pdfFileInput.value = '';
         updateProcessButtonState();
@@ -168,7 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            if (!pdfFile) {
+            if (pdfFiles.length === 0) {
                 showNotification('请上传PDF文件', 'error');
                 return;
             }
@@ -176,72 +174,91 @@ document.addEventListener('DOMContentLoaded', () => {
             // 开始处理
             processBtn.disabled = true;
             showProgressSection();
-            updateProgress('开始处理...', 5);
-            addProgressLog('开始OCR处理...');
             
-            try {
-                // 执行OCR处理
-                await processPdfWithMistral(mistralKey);
+            // 处理所有文件
+            for (let i = 0; i < pdfFiles.length; i++) {
+                const file = pdfFiles[i];
+                updateProgress(`处理第 ${i+1}/${pdfFiles.length} 个文件...`, Math.floor((i / pdfFiles.length) * 100));
+                addProgressLog(`开始处理文件: ${file.name}`);
                 
-                // 如果选择了翻译，则执行翻译
-                if (translationModelSelect.value !== 'none') {
-                    const translationKey = translationApiKeyInput.value.trim();
-                    if (translationModelSelect.value !== 'none' && !translationKey) {
-                        showNotification('请输入翻译API Key', 'error');
-                        updateProgress('翻译需要API Key', 100);
-                        addProgressLog('错误: 缺少翻译API Key');
-                        processBtn.disabled = false;
-                        return;
-                    }
-                    updateProgress('开始翻译...', 60);
-                    addProgressLog(`使用${translationModelSelect.value}模型进行翻译...`);
+                try {
+                    // 执行OCR处理
+                    await processPdfWithMistral(mistralKey, file);
                     
-                    // 获取文档大小估计
-                    const estimatedTokens = estimateTokenCount(markdownContent);
-                    const tokenLimit = 8192; // 设置一个安全的token限制
-                    
-                    if (estimatedTokens > tokenLimit) {
-                        // 使用分段翻译
-                        addProgressLog(`文档较大(~${Math.round(estimatedTokens/1000)}K tokens)，将进行分段翻译`);
-                        translationContent = await translateLongDocument(markdownContent, targetLanguage.value, translationModelSelect.value, translationKey);
-                    } else {
-                        // 直接翻译
-                        addProgressLog(`文档较小(~${Math.round(estimatedTokens/1000)}K tokens)，不分段直接翻译`);
-                        translationContent = await translateMarkdown(markdownContent, targetLanguage.value, translationModelSelect.value, translationKey);
+                    // 如果选择了翻译，则执行翻译
+                    if (translationModelSelect.value !== 'none') {
+                        const translationKey = translationApiKeyInput.value.trim();
+                        if (translationModelSelect.value !== 'none' && !translationKey) {
+                            showNotification('请输入翻译API Key', 'error');
+                            updateProgress('翻译需要API Key', 100);
+                            addProgressLog('错误: 缺少翻译API Key');
+                            processBtn.disabled = false;
+                            return;
+                        }
+                        
+                        addProgressLog(`使用${translationModelSelect.value}模型进行翻译...`);
+                        
+                        // 获取文档大小估计
+                        const estimatedTokens = estimateTokenCount(markdownContents[file.name]);
+                        const tokenLimit = 8192;
+                        
+                        if (estimatedTokens > tokenLimit) {
+                            addProgressLog(`文档较大(~${Math.round(estimatedTokens/1000)}K tokens)，将进行分段翻译`);
+                            translationContents[file.name] = await translateLongDocument(
+                                markdownContents[file.name], 
+                                targetLanguage.value, 
+                                translationModelSelect.value, 
+                                translationKey
+                            );
+                        } else {
+                            addProgressLog(`文档较小(~${Math.round(estimatedTokens/1000)}K tokens)，不分段直接翻译`);
+                            translationContents[file.name] = await translateMarkdown(
+                                markdownContents[file.name], 
+                                targetLanguage.value, 
+                                translationModelSelect.value, 
+                                translationKey
+                            );
+                        }
                     }
+                    
+                    addProgressLog(`文件 ${file.name} 处理完成`);
+                } catch (error) {
+                    console.error(`处理文件 ${file.name} 时出错:`, error);
+                    showNotification(`处理文件 ${file.name} 时出错: ${error.message}`, 'error');
+                    addProgressLog(`错误: ${error.message}`);
+                    // 继续处理下一个文件
+                    continue;
                 }
+            }
 
+            // 检查是否有成功处理的文件
+            if (Object.keys(markdownContents).length > 0) {
                 // 显示结果
-                updateProgress('处理完成!', 100);
+                updateProgress('所有文件处理完成!', 100);
                 addProgressLog('全部处理完成!');
                 showResultsSection();
-            } catch (error) {
-                console.error('处理错误:', error);
-                showNotification('处理过程中出错: ' + error.message, 'error');
-                addProgressLog('错误: ' + error.message);
-                updateProgress('处理失败', 100);
-            } finally {
-                processBtn.disabled = false;
+            } else {
+                throw new Error('没有文件被成功处理');
             }
         } catch (error) {
             console.error('处理错误:', error);
             showNotification('处理过程中出错: ' + error.message, 'error');
             addProgressLog('错误: ' + error.message);
             updateProgress('处理失败', 100);
+        } finally {
             processBtn.disabled = false;
         }
     });
 
     // 下载按钮
     downloadMarkdownBtn.addEventListener('click', () => {
-        if (markdownContent) {
+        if (Object.keys(markdownContents).length > 0) {
             downloadMarkdownWithImages();
         }
     });
 
     downloadTranslationBtn.addEventListener('click', () => {
-        if (translationContent) {
-            //downloadText(translationContent, 'translation.md');
+        if (Object.keys(translationContents).length > 0) {
             downloadTranslationWithImages();
         }
     });
@@ -306,18 +323,47 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // 辅助函数
-function handleFileSelection(file) {
-    pdfFile = file;
-    document.getElementById('fileName').textContent = file.name;
-    document.getElementById('fileSize').textContent = formatFileSize(file.size);
-    document.getElementById('fileInfo').classList.remove('hidden');
+function handleFileSelection(files) {
+    // 过滤出PDF文件
+    const pdfFilesArray = Array.from(files).filter(file => file.type === 'application/pdf');
+    
+    if (pdfFilesArray.length === 0) {
+        showNotification('请上传PDF文件', 'error');
+        return;
+    }
+    
+    // 添加到文件列表
+    pdfFiles.push(...pdfFilesArray);
+    
+    // 更新文件信息显示
+    updateFileInfoDisplay();
     updateProcessButtonState();
+}
+
+function updateFileInfoDisplay() {
+    if (pdfFiles.length === 0) {
+        fileInfo.classList.add('hidden');
+        return;
+    }
+    
+    fileInfo.classList.remove('hidden');
+    
+    if (pdfFiles.length === 1) {
+        // 单个文件显示
+        fileName.textContent = pdfFiles[0].name;
+        fileSize.textContent = formatFileSize(pdfFiles[0].size);
+    } else {
+        // 多个文件显示
+        const totalSize = pdfFiles.reduce((sum, file) => sum + file.size, 0);
+        fileName.textContent = `${pdfFiles.length} 个文件`;
+        fileSize.textContent = `总大小: ${formatFileSize(totalSize)}`;
+    }
 }
 
 function updateProcessButtonState() {
     const mistralKey = document.getElementById('mistralApiKey').value.trim();
     const processBtn = document.getElementById('processBtn');
-    processBtn.disabled = !pdfFile || !mistralKey;
+    processBtn.disabled = pdfFiles.length === 0 || !mistralKey;
 }
 
 function updateTranslationUIVisibility() {
@@ -336,14 +382,20 @@ function showResultsSection() {
     document.getElementById('progressSection').classList.add('hidden');
     document.getElementById('resultsSection').classList.remove('hidden');
     
-    // 显示Markdown内容
-    document.getElementById('markdownPreview').textContent = markdownContent.substring(0, 500) + '...';
+    // 显示第一个文件的Markdown内容
+    const firstFile = pdfFiles[0];
+    if (firstFile && markdownContents[firstFile.name]) {
+        document.getElementById('markdownPreview').textContent = markdownContents[firstFile.name].substring(0, 500) + '...';
+    } else {
+        document.getElementById('markdownPreview').textContent = '无可用内容';
+    }
     
     // 显示翻译内容（如果有）
-    if (translationContent) {
-        document.getElementById('translationPreview').textContent = translationContent.substring(0, 500) + '...';
+    if (firstFile && translationContents[firstFile.name]) {
+        document.getElementById('translationPreview').textContent = translationContents[firstFile.name].substring(0, 500) + '...';
         document.getElementById('translationResultCard').classList.remove('hidden');
     } else {
+        document.getElementById('translationPreview').textContent = '无可用翻译内容';
         document.getElementById('translationResultCard').classList.add('hidden');
     }
     
@@ -471,11 +523,24 @@ function formatFileSize(bytes) {
     else return (bytes / 1048576).toFixed(2) + ' MB';
 }
 
-// Mistral OCR 处理
-async function processPdfWithMistral(apiKey) {
+// 添加重试函数
+async function retryFetch(url, options, maxRetries = 3, delay = 1000) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            const response = await fetch(url, options);
+            return response;
+        } catch (error) {
+            if (i === maxRetries - 1) throw error;
+            console.log(`重试第 ${i + 1} 次...`);
+            await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+        }
+    }
+}
+
+// 修改processPdfWithMistral函数
+async function processPdfWithMistral(apiKey, file) {
     try {
-        addProgressLog('准备PDF文件...');
-        updateProgress('PDF处理准备中', 10);
+        addProgressLog(`准备处理文件: ${file.name}...`);
         
         // 检查API密钥长度
         if (apiKey.length < 30) {
@@ -484,24 +549,21 @@ async function processPdfWithMistral(apiKey) {
         
         // 从上传文件到获取OCR结果的完整流程
         const formData = new FormData();
-        // 关键点：文件上传字段名必须是file
-        formData.append('file', pdfFile);
+        formData.append('file', file);
         formData.append('purpose', 'ocr');
         
         addProgressLog('准备上传PDF文件...');
-        updateProgress('上传文件中...', 20);
         addProgressLog('开始上传到Mistral...');
         
-        console.log('开始上传文件，文件名:', pdfFile.name, '文件大小:', pdfFile.size);
+        console.log('开始上传文件，文件名:', file.name, '文件大小:', file.size);
         
-        // 尝试上传文件
+        // 使用重试机制上传文件
         let response;
         try {
-            response = await fetch('https://api.mistral.ai/v1/files', {
+            response = await retryFetch('https://api.mistral.ai/v1/files', {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${apiKey}`
-                    // 不要设置Content-Type，让浏览器自动设置multipart/form-data和boundary
                 },
                 body: formData
             });
@@ -680,8 +742,16 @@ async function processPdfWithMistral(apiKey) {
         updateProgress('生成Markdown...', 50);
         
         // 处理OCR结果
-        await processOcrResults(ocrData);
+        const markdownContent = await processOcrResults(ocrData);
         addProgressLog('Markdown生成完成');
+        
+        // 处理OCR结果时，将结果存储到对应的文件中
+        if (markdownContent) {
+            markdownContents[file.name] = markdownContent;
+            imagesDataMap[file.name] = imagesData;
+        } else {
+            throw new Error('OCR处理未返回有效内容');
+        }
         
         return true;
     } catch (error) {
@@ -724,7 +794,7 @@ async function processOcrResults(ocrResponse) {
             markdownContent += pageMarkdown + '\n\n';
         }
         
-        return true;
+        return markdownContent;
     } catch (error) {
         console.error('处理OCR结果错误:', error);
         throw new Error('处理OCR结果失败: ' + error.message);
@@ -1280,54 +1350,66 @@ async function downloadMarkdownWithImages() {
     try {
         const zip = new JSZip();
         
-        // 添加Markdown文件
-        zip.file('document.md', markdownContent);
-        
-        // 创建images文件夹
-        const imagesFolder = zip.folder('images');
-        
-        // 添加图片
-        for (const img of imagesData) {
-            const imgData = img.data.split(',')[1];
-            imagesFolder.file(`${img.id}.png`, imgData, { base64: true });
+        // 为每个文件创建单独的文件夹
+        for (const file of pdfFiles) {
+            const fileName = file.name.replace('.pdf', '');
+            const folder = zip.folder(fileName);
+            
+            // 添加Markdown文件
+            folder.file('document.md', markdownContents[file.name]);
+            
+            // 创建images文件夹
+            const imagesFolder = folder.folder('images');
+            
+            // 添加图片
+            const imagesData = imagesDataMap[file.name] || [];
+            for (const img of imagesData) {
+                const imgData = img.data.split(',')[1];
+                imagesFolder.file(`${img.id}.png`, imgData, { base64: true });
+            }
         }
         
         // 生成并下载zip文件
         const zipBlob = await zip.generateAsync({ type: 'blob' });
-        const pdfName = pdfFile ? pdfFile.name.replace('.pdf', '') : 'document';
-        saveAs(zipBlob, `${pdfName}_markdown.zip`);
+        saveAs(zipBlob, 'processed_documents.zip');
     } catch (error) {
         console.error('创建ZIP文件失败:', error);
         showNotification('下载失败: ' + error.message, 'error');
     }
 }
 
-downloadTranslationWithImages = async () => {
+async function downloadTranslationWithImages() {
     try {
         const zip = new JSZip();
         
-        // 直接添加声明到翻译内容
-        const currentDate = new Date().toISOString().split('T')[0];
-        const headerDeclaration = `> *本文档由 Paper Burner 工具制作 (${currentDate})。内容由 AI 大模型翻译生成，不保证翻译内容的准确性和完整性。*\n\n`;
-        const footerDeclaration = `\n\n---\n> *免责声明：本文档内容由大模型API自动翻译生成，Paper Burner 工具不对翻译内容的准确性、完整性和合法性负责。*`;
-        
-        // 添加Markdown文件，包含声明
-        const contentToDownload = headerDeclaration + translationContent + footerDeclaration;
-        zip.file('document.md', contentToDownload);
-        
-        // 创建images文件夹
-        const imagesFolder = zip.folder('images');
-        
-        // 添加图片
-        for (const img of imagesData) {
-            const imgData = img.data.split(',')[1];
-            imagesFolder.file(`${img.id}.png`, imgData, { base64: true });
+        // 为每个文件创建单独的文件夹
+        for (const file of pdfFiles) {
+            const fileName = file.name.replace('.pdf', '');
+            const folder = zip.folder(fileName);
+            
+            // 添加声明到翻译内容
+            const currentDate = new Date().toISOString().split('T')[0];
+            const headerDeclaration = `> *本文档由 Paper Burner 工具制作 (${currentDate})。内容由 AI 大模型翻译生成，不保证翻译内容的准确性和完整性。*\n\n`;
+            const footerDeclaration = `\n\n---\n> *免责声明：本文档内容由大模型API自动翻译生成，Paper Burner 工具不对翻译内容的准确性、完整性和合法性负责。*`;
+            
+            // 添加Markdown文件，包含声明
+            const contentToDownload = headerDeclaration + translationContents[file.name] + footerDeclaration;
+            folder.file('document.md', contentToDownload);
+            
+            // 创建images文件夹
+            const imagesFolder = folder.folder('images');
+            
+            // 添加图片
+            const imagesData = imagesDataMap[file.name] || [];
+            for (const img of imagesData) {
+                const imgData = img.data.split(',')[1];
+                imagesFolder.file(`${img.id}.png`, imgData, { base64: true });
+            }
         }
         
         // 生成并下载zip文件
         const zipBlob = await zip.generateAsync({ type: 'blob' });
-        const pdfName = pdfFile ? pdfFile.name.replace('.pdf', '') : 'document';
-        saveAs(zipBlob, `${pdfName}_translation.zip`);
+        saveAs(zipBlob, 'translated_documents.zip');
     } catch (error) {
         console.error('创建ZIP文件失败:', error);
         showNotification('下载失败: ' + error.message, 'error');
